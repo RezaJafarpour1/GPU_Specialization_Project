@@ -5,14 +5,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <sstream>
+#include <cctype>
+
+#include "image.hpp"
 
 namespace fs = std::filesystem;
-
-struct ImageU8
-{
-    int w = 0, h = 0;
-    std::vector<uint8_t> data; // row-major, size = w*h
-};
 
 namespace detail
 {
@@ -126,7 +123,6 @@ inline bool read_pgm(const fs::path &path, ImageU8 &out, std::string &err)
     else
     {
         // P5: after maxval there is one whitespace char, then raw bytes
-        // consume one single whitespace if we ended right before pixel stream
         if (f.peek() == '\n' || f.peek() == '\r' || f.peek() == ' ' || f.peek() == '\t')
             f.get();
         f.read(reinterpret_cast<char *>(out.data.data()), out.data.size());

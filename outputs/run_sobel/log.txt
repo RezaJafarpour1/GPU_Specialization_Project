@@ -1,0 +1,7 @@
+gpu_pipeline session log
+timestamp: Wed Sep  3 13:47:17 2025
+input_dir: "data"
+output_dir: "outputs/run_sobel"
+ops: sobel
+OK   small.pgm -> small.pgm
+summary: processed=1 skipped=0 failed=0

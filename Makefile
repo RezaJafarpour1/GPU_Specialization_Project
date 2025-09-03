@@ -1,29 +1,30 @@
-# Makefile — CUDA-ready; works now (no .cu yet) and later when you add kernels
+# Makefile — CUDA-ready; builds C++ and .cu, links with nvcc
 
 CXX      := g++
 NVCC     := nvcc
 
 INCLUDE  := -Iinclude
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -pedantic $(INCLUDE)
-# Arch flags come later when you add CUDA kernels; keep simple for now:
-NVCCFLAGS := -O2 -Xcompiler -Wall,-Wextra,-pedantic $(INCLUDE)
+
+# Target GPU archs: feel free to trim if needed
+GPU_ARCHS ?= 60 70 75 80 86
+NVCC_ARCH := $(foreach arch,$(GPU_ARCHS),-gencode arch=compute_$(arch),code=sm_$(arch))
+# NVCCFLAGS := -O2 $(NVCC_ARCH) -Xcompiler -Wall,-Wextra,-pedantic $(INCLUDE)
+NVCCFLAGS := -O2 $(NVCC_ARCH) -Xcompiler -Wall,-Wextra $(INCLUDE)
 
 TARGET   := gpu_pipeline
 
-# Sources
 CPPSRCS  := $(wildcard src/*.cpp)
 CUSRC    := $(wildcard src/*.cu)
-
-# Objects
 OBJDIR   := build
 OBJ_CPU  := $(CPPSRCS:src/%.cpp=$(OBJDIR)/%.o)
 OBJ_CUDA := $(CUSRC:src/%.cu=$(OBJDIR)/%.cu.o)
 OBJS     := $(OBJ_CPU) $(OBJ_CUDA)
 
-# Libraries (std::filesystem on older GCC needs this; if link fails, uncomment):
+# If you hit std::filesystem link errors on older toolchains, uncomment:
 # LIBS += -lstdc++fs
 
-.PHONY: all clean run debug
+.PHONY: all clean run
 
 all: $(TARGET)
 
@@ -31,12 +32,10 @@ $(TARGET): $(OBJS)
 	@mkdir -p $(dir $@)
 	$(NVCC) -o $@ $(OBJS) $(LIBS)
 
-# Compile C++ sources
 $(OBJDIR)/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Compile CUDA sources (used once you add .cu files)
 $(OBJDIR)/%.cu.o: src/%.cu
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
