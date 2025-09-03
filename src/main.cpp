@@ -6,9 +6,11 @@
 #include <filesystem>
 #include <optional>
 #include <chrono>
-#include <ctime>   // std::ctime
-#include <cctype>  // std::tolower
-#include <cstdlib> // std::exit
+#include <ctime>
+#include <cctype>
+#include <cstdlib>
+
+#include "pgm.hpp"
 
 namespace fs = std::filesystem;
 
@@ -16,7 +18,7 @@ struct Config
 {
     fs::path input_dir;
     fs::path output_dir;
-    std::vector<std::string> ops; // e.g., {"sobel","box","histeq"}
+    std::vector<std::string> ops; // e.g., {"sobel","box","histeq"} -- CUDA/NPP later
     int batch = 256;
     bool recursive = false;
     bool dry_run = false;
@@ -128,6 +130,27 @@ static bool is_image_file(const fs::path &p)
     return exts.count(ext) > 0;
 }
 
+// Placeholder CPU op: simple invert so we can see a visible change
+static void apply_ops_cpu(ImageU8 &img, const std::vector<std::string> &ops)
+{
+    bool did_something = false;
+    for (const auto &op : ops)
+    {
+        if (op == "invert")
+        {
+            for (auto &px : img.data)
+                px = uint8_t(255 - px);
+            did_something = true;
+        }
+        // future: sobel/box/gauss/histeq via CUDA/NPP
+    }
+    // If user passed known future ops only, do nothing now (that’s OK for Step 3)
+    if (!did_something && ops.empty())
+    {
+        // default: no-op
+    }
+}
+
 int main(int argc, char **argv)
 {
     auto cfgOpt = parse_args(argc, argv);
@@ -155,13 +178,14 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    // Validate ops (no actual processing yet)
-    const std::unordered_set<std::string> allowed = {"sobel", "box", "gauss", "histeq"};
+    // Validate ops (no CUDA/NPP yet; "invert" is our CPU-only test op)
+    const std::unordered_set<std::string> allowed = {"sobel", "box", "gauss", "histeq", "invert"};
     for (const auto &op : cfg.ops)
     {
         if (!allowed.count(op))
         {
-            std::cerr << "Warning: unknown op '" << op << "' (allowed: sobel, box, gauss, histeq)\n";
+            std::cerr << "Warning: unknown op '" << op << "' "
+                                                          "(allowed now: invert; coming soon: sobel, box, gauss, histeq)\n";
         }
     }
 
@@ -184,11 +208,11 @@ int main(int argc, char **argv)
         }
     }
 
-    // Minimal “proof” scaffolding: write a log stub
+    // Session log
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     fs::path log_path = cfg.output_dir / "log.txt";
     std::ofstream log(log_path);
-    log << "gpu_pipeline dry-run log\n";
+    log << "gpu_pipeline session log\n";
     log << "timestamp: " << std::ctime(&now);
     log << "input_dir: " << cfg.input_dir << "\n";
     log << "output_dir: " << cfg.output_dir << "\n";
@@ -200,15 +224,55 @@ int main(int argc, char **argv)
     log << "\n";
     log << "batch: " << cfg.batch << "\n";
     log << "recursive: " << (cfg.recursive ? "true" : "false") << "\n";
-    log << "files_found: " << files.size() << "\n";
 
-    // Print a friendly summary to stdout too
-    std::cout << "[OK] Found " << files.size() << " image(s). "
-              << "Log: " << log_path << "\n";
+    std::cout << "[INFO] Found " << files.size() << " image(s).\n";
 
-    if (!cfg.dry_run)
+    if (cfg.dry_run)
     {
-        std::cout << "(No processing yet — CUDA/NPP pipeline lands in Step 4/5)\n";
+        log << "files_found: " << files.size() << "\n";
+        std::cout << "[OK] Dry run only. Log: " << log_path << "\n";
+        return 0;
     }
-    return 0;
+
+    // Process sequentially (batch param reserved for later)
+    size_t processed = 0, skipped = 0, failed = 0;
+    for (const auto &in_path : files)
+    {
+        if (in_path.extension() != ".pgm" && in_path.extension() != ".PGM")
+        {
+            ++skipped;
+            log << "SKIP (unsupported for step3): " << in_path.filename().string() << "\n";
+            continue;
+        }
+        ImageU8 img;
+        std::string err;
+        if (!read_pgm(in_path, img, err))
+        {
+            ++failed;
+            log << "FAIL read " << in_path.filename().string() << " : " << err << "\n";
+            continue;
+        }
+
+        apply_ops_cpu(img, cfg.ops);
+
+        fs::path out_path = cfg.output_dir / in_path.filename();
+        if (!write_pgm(out_path, img, err, /*binary*/ true))
+        {
+            ++failed;
+            log << "FAIL write " << out_path.filename().string() << " : " << err << "\n";
+            continue;
+        }
+        ++processed;
+        log << "OK   " << in_path.filename().string() << " -> " << out_path.filename().string() << "\n";
+    }
+
+    log << "summary: processed=" << processed
+        << " skipped=" << skipped
+        << " failed=" << failed << "\n";
+
+    std::cout << "[DONE] processed=" << processed
+              << " skipped=" << skipped
+              << " failed=" << failed
+              << "  Log: " << log_path << "\n";
+    return (failed == 0) ? 0 : 1;
 }

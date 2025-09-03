@@ -1,0 +1,9 @@
+gpu_pipeline session log
+timestamp: Wed Sep  3 13:13:03 2025
+input_dir: "data"
+output_dir: "outputs/run2"
+ops: invert
+batch: 256
+recursive: false
+OK   small.pgm -> small.pgm
+summary: processed=1 skipped=0 failed=0
