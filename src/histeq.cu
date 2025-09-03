@@ -119,3 +119,67 @@ std::string histeq_cuda(const ImageU8& in, ImageU8& out, float* elapsed_ms)
     cudaFree(d_in); cudaFree(d_out); cudaFree(d_hist);
     return {};
 }
+
+
+//extern __global__ void kernel_histogram(const uint8_t* __restrict__, int, unsigned int* __restrict__);
+//extern __global__ void kernel_apply_lut(const uint8_t* __restrict__, uint8_t* __restrict__, int);
+//extern __constant__ uint8_t d_lut[256];
+
+std::string histeq_launch_stream(uint8_t* d_in, uint8_t* d_out, unsigned int* d_hist, int w, int h, cudaStream_t stream, std::string* err_out)
+{
+    if (err_out) err_out->clear();
+    if (!d_in || !d_out || !d_hist || w <= 0 || h <= 0) return "histeq_launch_stream: bad args";
+
+    const int n = w * h;
+    int blocks = (n + 256 - 1) / 256;
+    blocks = blocks > 1024 ? 1024 : blocks;
+
+    // zero histogram
+    cudaError_t st = cudaMemsetAsync(d_hist, 0, 256 * sizeof(unsigned int), stream);
+    if (st != cudaSuccess) return std::string("histeq memset failed: ") + cudaGetErrorString(st);
+
+    // histogram on stream
+    kernel_histogram<<<blocks, 256, 0, stream>>>(d_in, n, d_hist);
+    st = cudaGetLastError();
+    if (st != cudaSuccess) return std::string("histeq histogram launch failed: ") + cudaGetErrorString(st);
+
+    // Copy hist to host (async), then sync this stream only
+    std::vector<unsigned int> h_hist(256);
+    st = cudaMemcpyAsync(h_hist.data(), d_hist, 256 * sizeof(unsigned int), cudaMemcpyDeviceToHost, stream);
+    if (st != cudaSuccess) return std::string("histeq memcpy hist failed: ") + cudaGetErrorString(st);
+
+    st = cudaStreamSynchronize(stream);
+    if (st != cudaSuccess) return std::string("histeq stream sync after hist failed: ") + cudaGetErrorString(st);
+
+    // host CDF + LUT
+    std::vector<unsigned int> cdf(256);
+    unsigned int cum = 0, cdf_min = 0;
+    for (int i = 0; i < 256; ++i) {
+        cum += h_hist[i];
+        cdf[i] = cum;
+        if (cdf_min == 0 && cum != 0) cdf_min = cum;
+    }
+    std::vector<uint8_t> h_lut(256);
+    const unsigned int total = cdf.back();
+    if (total == 0 || cdf_min == total) {
+        for (int i = 0; i < 256; ++i) h_lut[i] = static_cast<uint8_t>(i);
+    } else {
+        for (int i = 0; i < 256; ++i) {
+            float num = float(cdf[i] - cdf_min);
+            float den = float(total - cdf_min);
+            int v = int(255.0f * (num / den) + 0.5f);
+            if (v < 0) v = 0; if (v > 255) v = 255;
+            h_lut[i] = static_cast<uint8_t>(v);
+        }
+    }
+
+    // Upload LUT (async) and apply on same stream
+    st = cudaMemcpyToSymbolAsync(d_lut, h_lut.data(), 256 * sizeof(uint8_t), 0, cudaMemcpyHostToDevice, stream);
+    if (st != cudaSuccess) return std::string("histeq copy LUT failed: ") + cudaGetErrorString(st);
+
+    kernel_apply_lut<<<(n + 255) / 256, 256, 0, stream>>>(d_in, d_out, n);
+    st = cudaGetLastError();
+    if (st != cudaSuccess) return std::string("histeq apply LUT launch failed: ") + cudaGetErrorString(st);
+
+    return {};
+}

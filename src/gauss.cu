@@ -141,3 +141,22 @@ std::string gauss5_cuda(const ImageU8& in, ImageU8& out, float* elapsed_ms)
     cudaFree(d_in); cudaFree(d_out); cudaFree(d_tmp);
     return {};
 }
+
+
+//extern __global__ void hpass_gauss5(const uint8_t* __restrict__, uint16_t* __restrict__, int, int);
+//extern __global__ void vpass_gauss5(const uint16_t* __restrict__, uint8_t* __restrict__, int, int);
+
+std::string gauss5_launch_stream(const uint8_t* d_in, uint8_t* d_out, uint16_t* d_tmp, int w, int h, cudaStream_t stream)
+{
+    if (!d_in || !d_out || !d_tmp || w <= 0 || h <= 0) return "gauss5_launch_stream: bad args";
+    constexpr int BW = 16, BH = 16;
+    dim3 block(BW, BH);
+    dim3 grid((w + BW - 1) / BW, (h + BH - 1) / BH);
+    hpass_gauss5<<<grid, block, 0, stream>>>(d_in, d_tmp, w, h);
+    auto st = cudaGetLastError();
+    if (st != cudaSuccess) return std::string("gauss hpass launch failed: ") + cudaGetErrorString(st);
+    vpass_gauss5<<<grid, block, 0, stream>>>(d_tmp, d_out, w, h);
+    st = cudaGetLastError();
+    if (st != cudaSuccess) return std::string("gauss vpass launch failed: ") + cudaGetErrorString(st);
+    return {};
+}

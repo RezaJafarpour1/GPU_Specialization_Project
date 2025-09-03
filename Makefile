@@ -10,7 +10,8 @@ CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -pedantic $(INCLUDE)
 GPU_ARCHS ?= 60 70 75 80 86
 NVCC_ARCH := $(foreach arch,$(GPU_ARCHS),-gencode arch=compute_$(arch),code=sm_$(arch))
 # NVCCFLAGS := -O2 $(NVCC_ARCH) -Xcompiler -Wall,-Wextra,-pedantic $(INCLUDE)
-NVCCFLAGS := -O2 $(NVCC_ARCH) -Xcompiler -Wall,-Wextra $(INCLUDE)
+# NVCCFLAGS := -O2 $(NVCC_ARCH) -Xcompiler -Wall,-Wextra $(INCLUDE)
+NVCCFLAGS := -std=c++17 -O2 $(NVCC_ARCH) -Xcompiler -Wall,-Wextra $(INCLUDE)
 
 TARGET   := gpu_pipeline
 

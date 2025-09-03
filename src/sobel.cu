@@ -106,3 +106,16 @@ std::string sobel_cuda(const ImageU8& in, ImageU8& out)
     cudaFree(d_in); cudaFree(d_out);
     return {};
 }
+
+
+std::string sobel_launch_stream(const uint8_t* d_in, uint8_t* d_out, int w, int h, cudaStream_t stream)
+{
+    if (!d_in || !d_out || w <= 0 || h <= 0) return "sobel_launch_stream: bad args";
+    constexpr int BLOCK_W = 16, BLOCK_H = 16;
+    dim3 block(BLOCK_W, BLOCK_H);
+    dim3 grid((w + BLOCK_W - 1) / BLOCK_W, (h + BLOCK_H - 1) / BLOCK_H);
+    sobel_kernel<<<grid, block, 0, stream>>>(d_in, d_out, w, h);
+    auto st = cudaGetLastError();
+    if (st != cudaSuccess) return std::string("sobel launch failed: ") + cudaGetErrorString(st);
+    return {};
+}

@@ -18,6 +18,7 @@
 #include "box.hpp"
 #include "gauss.hpp"
 #include "histeq.hpp"
+#include "pipeline.hpp"
 
 namespace fs = std::filesystem;
 
@@ -29,6 +30,7 @@ struct Config
     int batch = 256;
     bool recursive = false;
     bool dry_run = false;
+    int streams = 2;
 };
 
 static void print_usage(const char *prog)
@@ -43,7 +45,8 @@ static void print_usage(const char *prog)
         << "  --batch N            Number of files to process per wave (default 256)\n"
         << "  --recursive          Recurse into subdirectories\n"
         << "  --dry_run            Parse, validate, and enumerate—without processing\n"
-        << "  --help               Show this help\n";
+        << "  --help               Show this help\n"
+        << "  --streams N          Number of CUDA streams (default 2)\n";
 }
 
 static std::vector<std::string> split_csv(const std::string &s)
@@ -110,6 +113,11 @@ static std::optional<Config> parse_args(int argc, char **argv)
         {
             cfg.dry_run = true;
         }
+        else if (a == "--streams")
+        {
+            cfg.streams = std::stoi(need_next("--streams"));
+        }
+        
         else
         {
             std::cerr << "Unknown flag: " << a << "\n";
@@ -222,108 +230,143 @@ int main(int argc, char **argv)
     std::ofstream csv(csv_path);
     csv << "filename,op,ms\n";
 
-    for (const auto &in_path : files)
+    if (cfg.streams > 1)
     {
-        if (in_path.extension() != ".pgm" && in_path.extension() != ".PGM")
+        // ---- multi-stream GPU pipeline path ----
+        PipelineConfig pcfg;
+        pcfg.streams = cfg.streams;
+        pcfg.ops = cfg.ops;
+
+        PipelineResult pr;
+        std::string e = run_pipeline_streams(files, cfg.output_dir, pcfg, log, csv, pr);
+        if (!e.empty())
         {
-            ++skipped;
-            log << "SKIP (currently only PGM handled): " << in_path.filename().string() << "\n";
-            continue;
+            std::cerr << "Pipeline error: " << e << "\n";
+            return 1;
         }
 
-        ImageU8 img;
-        std::string err;
-        if (!read_pgm(in_path, img, err))
+        processed = pr.processed;
+        skipped = pr.skipped;
+        failed = pr.failed;
+
+        // Add total wall time + throughput
+        csv << "TOTAL_MS,all," << std::fixed << std::setprecision(3) << pr.total_wall_ms << "\n";
+        double ips = (pr.total_wall_ms > 0.0) ? (processed * 1000.0 / pr.total_wall_ms) : 0.0;
+        log << "throughput_images_per_sec: " << std::fixed << std::setprecision(2) << ips << "\n";
+        std::cout << "[THROUGHPUT] images/sec = " << std::fixed << std::setprecision(2) << ips << "\n";
+    }
+    else
+    {
+        // ---- existing sequential CPU/GPU path (Step 6), with TOTAL_MS ----
+        auto t0_all = std::chrono::steady_clock::now();
+
+        for (const auto &in_path : files)
         {
-            ++failed;
-            log << "FAIL read " << in_path.filename().string() << " : " << err << "\n";
-            continue;
+            if (in_path.extension() != ".pgm" && in_path.extension() != ".PGM")
+            {
+                ++skipped;
+                log << "SKIP (currently only PGM handled): " << in_path.filename().string() << "\n";
+                continue;
+            }
+
+            ImageU8 img;
+            std::string err;
+            if (!read_pgm(in_path, img, err))
+            {
+                ++failed;
+                log << "FAIL read " << in_path.filename().string() << " : " << err << "\n";
+                continue;
+            }
+
+            // Apply ops in the given order with simple wall timing around each call
+            bool any_error = false;
+            for (const auto &op : cfg.ops)
+            {
+                using clock = std::chrono::steady_clock;
+                auto t0 = clock::now();
+                float gpu_ms = 0.0f;
+
+                if (op == "invert")
+                {
+                    cpu_invert(img);
+                }
+                else if (op == "sobel")
+                {
+                    ImageU8 out;
+                    std::string e = sobel_cuda(img, out);
+                    if (!e.empty())
+                    {
+                        any_error = true;
+                        log << "FAIL sobel " << in_path.filename().string() << " : " << e << "\n";
+                        break;
+                    }
+                    img = std::move(out);
+                }
+                else if (op == "box")
+                {
+                    ImageU8 out;
+                    std::string e = box3_cuda(img, out, &gpu_ms);
+                    if (!e.empty())
+                    {
+                        any_error = true;
+                        log << "FAIL box " << in_path.filename().string() << " : " << e << "\n";
+                        break;
+                    }
+                    img = std::move(out);
+                }
+                else if (op == "gauss")
+                {
+                    ImageU8 out;
+                    std::string e = gauss5_cuda(img, out, &gpu_ms);
+                    if (!e.empty())
+                    {
+                        any_error = true;
+                        log << "FAIL gauss " << in_path.filename().string() << " : " << e << "\n";
+                        break;
+                    }
+                    img = std::move(out);
+                }
+                else if (op == "histeq")
+                {
+                    ImageU8 out;
+                    std::string e = histeq_cuda(img, out, &gpu_ms);
+                    if (!e.empty())
+                    {
+                        any_error = true;
+                        log << "FAIL histeq " << in_path.filename().string() << " : " << e << "\n";
+                        break;
+                    }
+                    img = std::move(out);
+                }
+                else
+                {
+                    log << "Warning: unknown op '" << op << "'\n";
+                }
+
+                auto t1 = clock::now();
+                double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+                // prefer CUDA event time if we got it; otherwise wall-clock
+                double used_ms = (gpu_ms > 0.0f) ? gpu_ms : wall_ms;
+                csv << in_path.filename().string() << "," << op << "," << std::fixed << std::setprecision(3) << used_ms << "\n";
+            }
+
+            // Write output even if some ops were TODO (we still save the last successful image)
+            fs::path out_path = cfg.output_dir / in_path.filename();
+            if (!write_pgm(out_path, img, err, /*binary*/ true))
+            {
+                ++failed;
+                log << "FAIL write " << out_path.filename().string() << " : " << err << "\n";
+                continue;
+            }
+            if (!any_error)
+                ++processed;
+            log << "OK   " << in_path.filename().string() << " -> " << out_path.filename().string() << "\n";
         }
 
-        // Apply ops in the given order with simple wall timing around each call
-        bool any_error = false;
-        for (const auto &op : cfg.ops)
-        {
-            using clock = std::chrono::steady_clock;
-            auto t0 = clock::now();
-            float gpu_ms = 0.0f;
-
-            if (op == "invert")
-            {
-                cpu_invert(img);
-            }
-            else if (op == "sobel")
-            {
-                ImageU8 out;
-                std::string e = sobel_cuda(img, out);
-                if (!e.empty())
-                {
-                    any_error = true;
-                    log << "FAIL sobel " << in_path.filename().string() << " : " << e << "\n";
-                    break;
-                }
-                img = std::move(out);
-            }
-            else if (op == "box")
-            {
-                ImageU8 out;
-                std::string e = box3_cuda(img, out, &gpu_ms);
-                if (!e.empty())
-                {
-                    any_error = true;
-                    log << "FAIL box " << in_path.filename().string() << " : " << e << "\n";
-                    break;
-                }
-                img = std::move(out);
-            }
-            else if (op == "gauss")
-            {
-                ImageU8 out;
-                std::string e = gauss5_cuda(img, out, &gpu_ms);
-                if (!e.empty())
-                {
-                    any_error = true;
-                    log << "FAIL gauss " << in_path.filename().string() << " : " << e << "\n";
-                    break;
-                }
-                img = std::move(out);
-            }
-            else if (op == "histeq")
-            {
-                ImageU8 out;
-                std::string e = histeq_cuda(img, out, &gpu_ms);
-                if (!e.empty())
-                {
-                    any_error = true;
-                    log << "FAIL histeq " << in_path.filename().string() << " : " << e << "\n";
-                    break;
-                }
-                img = std::move(out);
-            }
-            else
-            {
-                log << "Warning: unknown op '" << op << "'\n";
-            }
-
-            auto t1 = clock::now();
-            double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-            // prefer CUDA event time if we got it; otherwise wall-clock
-            double used_ms = (gpu_ms > 0.0f) ? gpu_ms : wall_ms;
-            csv << in_path.filename().string() << "," << op << "," << std::fixed << std::setprecision(3) << used_ms << "\n";
-        }
-
-        // Write output even if some ops were TODO (we still save the last successful image)
-        fs::path out_path = cfg.output_dir / in_path.filename();
-        if (!write_pgm(out_path, img, err, /*binary*/ true))
-        {
-            ++failed;
-            log << "FAIL write " << out_path.filename().string() << " : " << err << "\n";
-            continue;
-        }
-        if (!any_error)
-            ++processed;
-        log << "OK   " << in_path.filename().string() << " -> " << out_path.filename().string() << "\n";
+        auto t1_all = std::chrono::steady_clock::now();
+        double total_ms = std::chrono::duration<double, std::milli>(t1_all - t0_all).count();
+        csv << "TOTAL_MS,all," << std::fixed << std::setprecision(3) << total_ms << "\n";
     }
 
     log << "summary: processed=" << processed
