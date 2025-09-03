@@ -1,0 +1,8 @@
+gpu_pipeline dry-run log
+timestamp: Wed Sep  3 03:54:45 2025
+input_dir: "data"
+output_dir: "outputs/run1"
+ops: sobel,box
+batch: 256
+recursive: false
+files_found: 1
