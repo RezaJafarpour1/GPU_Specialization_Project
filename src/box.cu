@@ -123,9 +123,6 @@ std::string box3_cuda(const ImageU8& in, ImageU8& out, float* elapsed_ms)
 }
 
 
-//extern __global__ void hpass_sum3(const uint8_t* __restrict__, uint16_t* __restrict__, int, int);
-//extern __global__ void vpass_div9(const uint16_t* __restrict__, uint8_t* __restrict__, int, int);
-
 std::string box3_launch_stream(const uint8_t* d_in, uint8_t* d_out, uint16_t* d_tmp, int w, int h, cudaStream_t stream)
 {
     if (!d_in || !d_out || !d_tmp || w <= 0 || h <= 0) return "box3_launch_stream: bad args";

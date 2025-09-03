@@ -143,8 +143,6 @@ std::string gauss5_cuda(const ImageU8& in, ImageU8& out, float* elapsed_ms)
 }
 
 
-//extern __global__ void hpass_gauss5(const uint8_t* __restrict__, uint16_t* __restrict__, int, int);
-//extern __global__ void vpass_gauss5(const uint16_t* __restrict__, uint8_t* __restrict__, int, int);
 
 std::string gauss5_launch_stream(const uint8_t* d_in, uint8_t* d_out, uint16_t* d_tmp, int w, int h, cudaStream_t stream)
 {

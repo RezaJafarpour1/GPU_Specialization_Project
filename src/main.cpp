@@ -351,7 +351,7 @@ int main(int argc, char **argv)
                 csv << in_path.filename().string() << "," << op << "," << std::fixed << std::setprecision(3) << used_ms << "\n";
             }
 
-            // Write output even if some ops were TODO (we still save the last successful image)
+            
             fs::path out_path = cfg.output_dir / in_path.filename();
             if (!write_pgm(out_path, img, err, /*binary*/ true))
             {
