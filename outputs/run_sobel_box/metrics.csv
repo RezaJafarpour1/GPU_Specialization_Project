@@ -1,0 +1,3 @@
+filename,op,ms
+small.pgm,sobel,137.057
+small.pgm,box,0.018

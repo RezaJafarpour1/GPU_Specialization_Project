@@ -9,10 +9,13 @@
 #include <ctime>
 #include <cctype>
 #include <cstdlib>
+#include <sstream>
+#include <iomanip>
 
 #include "image.hpp"
 #include "pgm.hpp"
 #include "sobel.hpp"
+#include "box.hpp"
 
 namespace fs = std::filesystem;
 
@@ -211,6 +214,12 @@ int main(int argc, char **argv)
     }
 
     size_t processed = 0, skipped = 0, failed = 0;
+
+    // CSV metrics (per image/op)
+    fs::path csv_path = cfg.output_dir / "metrics.csv";
+    std::ofstream csv(csv_path);
+    csv << "filename,op,ms\n";
+
     for (const auto &in_path : files)
     {
         if (in_path.extension() != ".pgm" && in_path.extension() != ".PGM")
@@ -229,9 +238,14 @@ int main(int argc, char **argv)
             continue;
         }
 
-        // Apply ops in the given order
+        // Apply ops in the given order with simple wall timing around each call
+        bool any_error = false;
         for (const auto &op : cfg.ops)
         {
+            using clock = std::chrono::steady_clock;
+            auto t0 = clock::now();
+            float gpu_ms = 0.0f;
+
             if (op == "invert")
             {
                 cpu_invert(img);
@@ -242,23 +256,42 @@ int main(int argc, char **argv)
                 std::string e = sobel_cuda(img, out);
                 if (!e.empty())
                 {
-                    ++failed;
+                    any_error = true;
                     log << "FAIL sobel " << in_path.filename().string() << " : " << e << "\n";
-                    goto write_or_continue;
+                    break;
                 }
                 img = std::move(out);
             }
-            else
+            else if (op == "box")
+            {
+                ImageU8 out;
+                std::string e = box3_cuda(img, out, &gpu_ms);
+                if (!e.empty())
+                {
+                    any_error = true;
+                    log << "FAIL box " << in_path.filename().string() << " : " << e << "\n";
+                    break;
+                }
+                img = std::move(out);
+            }
+            else if (op == "gauss" || op == "histeq")
             {
                 log << "TODO (not implemented yet): " << op << " for " << in_path.filename().string() << "\n";
             }
+            else
+            {
+                log << "Warning: unknown op '" << op << "'\n";
+            }
+
+            auto t1 = clock::now();
+            double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+            // prefer CUDA event time if we got it; otherwise wall-clock
+            double used_ms = (gpu_ms > 0.0f) ? gpu_ms : wall_ms;
+            csv << in_path.filename().string() << "," << op << "," << std::fixed << std::setprecision(3) << used_ms << "\n";
         }
 
-    write_or_continue:;
-        if (failed && (log.tellp(), true))
-        { /* keep logging; still try to write if we have data */
-        }
-
+        // Write output even if some ops were TODO (we still save the last successful image)
         fs::path out_path = cfg.output_dir / in_path.filename();
         if (!write_pgm(out_path, img, err, /*binary*/ true))
         {
@@ -266,7 +299,8 @@ int main(int argc, char **argv)
             log << "FAIL write " << out_path.filename().string() << " : " << err << "\n";
             continue;
         }
-        ++processed;
+        if (!any_error)
+            ++processed;
         log << "OK   " << in_path.filename().string() << " -> " << out_path.filename().string() << "\n";
     }
 
@@ -277,6 +311,7 @@ int main(int argc, char **argv)
     std::cout << "[DONE] processed=" << processed
               << " skipped=" << skipped
               << " failed=" << failed
-              << "  Log: " << log_path << "\n";
+              << "  Log: " << log_path << "\n"
+              << "[INFO] Metrics CSV: " << csv_path << "\n";
     return (failed == 0) ? 0 : 1;
 }

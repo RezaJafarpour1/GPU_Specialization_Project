@@ -1,0 +1,7 @@
+gpu_pipeline session log
+timestamp: Wed Sep  3 14:10:49 2025
+input_dir: "data"
+output_dir: "outputs/run_box"
+ops: box
+OK   small.pgm -> small.pgm
+summary: processed=1 skipped=0 failed=0
