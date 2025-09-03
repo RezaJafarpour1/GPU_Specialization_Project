@@ -16,6 +16,8 @@
 #include "pgm.hpp"
 #include "sobel.hpp"
 #include "box.hpp"
+#include "gauss.hpp"
+#include "histeq.hpp"
 
 namespace fs = std::filesystem;
 
@@ -274,9 +276,29 @@ int main(int argc, char **argv)
                 }
                 img = std::move(out);
             }
-            else if (op == "gauss" || op == "histeq")
+            else if (op == "gauss")
             {
-                log << "TODO (not implemented yet): " << op << " for " << in_path.filename().string() << "\n";
+                ImageU8 out;
+                std::string e = gauss5_cuda(img, out, &gpu_ms);
+                if (!e.empty())
+                {
+                    any_error = true;
+                    log << "FAIL gauss " << in_path.filename().string() << " : " << e << "\n";
+                    break;
+                }
+                img = std::move(out);
+            }
+            else if (op == "histeq")
+            {
+                ImageU8 out;
+                std::string e = histeq_cuda(img, out, &gpu_ms);
+                if (!e.empty())
+                {
+                    any_error = true;
+                    log << "FAIL histeq " << in_path.filename().string() << " : " << e << "\n";
+                    break;
+                }
+                img = std::move(out);
             }
             else
             {

@@ -1,0 +1,7 @@
+gpu_pipeline session log
+timestamp: Wed Sep  3 14:28:05 2025
+input_dir: "data"
+output_dir: "outputs/run_gauss"
+ops: gauss
+OK   small.pgm -> small.pgm
+summary: processed=1 skipped=0 failed=0

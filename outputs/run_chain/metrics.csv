@@ -1,0 +1,4 @@
+filename,op,ms
+small.pgm,gauss,0.028
+small.pgm,sobel,0.295
+small.pgm,histeq,0.038
